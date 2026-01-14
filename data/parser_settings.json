@@ -1,0 +1,10 @@
+{
+  "check_interval": 20,
+  "max_age_minutes": 1440,
+  "max_pages": 10,
+  "rows_per_page": 100,
+  "price_currency": "rubles",
+  "yuan_to_rub_rate": 12.5,
+  "notify_new_only": true,
+  "filter_by_query": true
+}
