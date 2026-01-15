@@ -33,3 +33,9 @@ MAX_AGE_MINUTES = 1440
 MAX_PAGES = 50
 ROWS_PER_PAGE = 500
 DEFAULT_QUERIES = ["cav"]
+
+ROLE_ADMIN = "admin"
+ROLE_USER = "user"
+WHITELIST_FILE = DATA_DIR / "whitelist.json"
+USER_SETTINGS_DIR = DATA_DIR / "user_settings"
+USER_SETTINGS_DIR.mkdir(exist_ok=True)

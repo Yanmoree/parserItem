@@ -13,6 +13,7 @@ from bot.handlers import setup_handlers
 from bot.notifications import send_new_products
 from parsers.goofish import GoofishParser
 from storage.files import load_search_queries, add_seen_ids, load_seen_ids, get_user_queries
+from utils.auto_refresh import cookies_manager  # Импорт менеджера cookies
 
 # Создаем core/settings.py если его нет
 try:
@@ -53,13 +54,21 @@ class SimpleMonitor:
     async def initialize_parser(self):
         """Асинхронная инициализация парсера"""
         print("🔄 Инициализация парсера...")
+        
+        # Инициализируем менеджер cookies
+        await cookies_manager.initialize()
+        
         self.parser = GoofishParser()
         
         # Проверяем cookies
         is_valid, message = self.parser.check_cookies()
         if not is_valid:
             print(f"❌ Cookies невалидны: {message}")
-            return False
+            print("🔄 Пробую обновить cookies автоматически...")
+            success = await cookies_manager.refresh_cookies()
+            if not success:
+                print("❌ Не могу запустить мониторинг - не удалось обновить cookies")
+                return False
         
         print("✅ Парсер готов к работе")
         return True
