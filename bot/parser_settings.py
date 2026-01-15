@@ -15,11 +15,11 @@ class ParserSettings:
     def __init__(self):
         self.settings_file = DATA_DIR / "parser_settings.json"
         self.default_settings = {
-            'check_interval': 300,  # 5 минут
-            'max_age_minutes': 1440,  # 24 часа
+            'check_interval': 300,
+            'max_age_minutes': 1440,
             'max_pages': 10,
-            'rows_per_page': 100,
-            'price_currency': 'yuan',  # 'yuan' или 'rubles'
+            'rows_per_page': 500,
+            'price_currency': 'yuan',
             'yuan_to_rub_rate': 12.5,
             'notify_new_only': True,
             'filter_by_query': True
@@ -32,10 +32,15 @@ class ParserSettings:
             try:
                 with open(self.settings_file, 'r', encoding='utf-8') as f:
                     saved = json.load(f)
-                    # Объединяем с дефолтными настройками
-                    return {**self.default_settings, **saved}
-            except:
-                pass
+                    # Объединяем с дефолтными настройками и конвертируем числа
+                    merged = {**self.default_settings, **saved}
+                    # Конвертируем настройки пагинации в целые числа
+                    merged['max_pages'] = int(merged.get('max_pages', 10))
+                    merged['rows_per_page'] = int(merged.get('rows_per_page', 100))
+                    return merged
+            except Exception as e:
+                print(f"❌ Ошибка загрузки настроек: {e}")
+                return self.default_settings.copy()
         return self.default_settings.copy()
     
     def save_settings(self):
@@ -50,6 +55,13 @@ class ParserSettings:
     
     def set(self, key: str, value):
         """Установка значения настройки"""
+        # Конвертируем настройки пагинации в целые числа перед сохранением
+        if key in ['max_pages', 'rows_per_page']:
+            try:
+                value = int(float(value)) if isinstance(value, (int, float, str)) else int(value)
+            except (ValueError, TypeError):
+                value = self.default_settings[key]
+        
         self.settings[key] = value
         self.save_settings()
     
@@ -136,8 +148,8 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         setting_map = {
             "setting_check_interval": ("⏰ Интервал проверки (секунды)", "check_interval", "число"),
             "setting_max_age": ("⏳ Макс. возраст товара (минуты)", "max_age_minutes", "число"),
-            "setting_max_pages": ("📄 Макс. страниц для проверки", "max_pages", "число"),
-            "setting_rows_page": ("📦 Товаров на странице", "rows_per_page", "число"),
+            "setting_max_pages": ("📄 Макс. страниц для проверки", "max_pages", "целое"),
+            "setting_rows_page": ("📦 Товаров на странице", "rows_per_page", "целое"),
             "setting_currency": ("💰 Валюта отображения (yuan/rubles)", "price_currency", "валюта"),
             "setting_exchange_rate": ("💱 Курс юань → рубль", "yuan_to_rub_rate", "число"),
             "setting_notify_new": ("🔔 Уведомлять только о новых товарах", "notify_new_only", "булев"),
@@ -154,6 +166,7 @@ async def settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Текущее: <code>{parser_settings.get(setting_key)}</code>\n\n"
                 f"Примеры:\n"
                 f"• Для числа: <code>300</code>\n"
+                f"• Для целого: <code>5</code>\n"
                 f"• Для валюты: <code>yuan</code> или <code>rubles</code>\n"
                 f"• Для булева: <code>да</code>/<code>нет</code> или <code>true</code>/<code>false</code>",
                 parse_mode='HTML'
@@ -172,6 +185,9 @@ async def setting_value_handler(update: Update, context: ContextTypes.DEFAULT_TY
             value = float(user_input)
             if setting_key in ['check_interval', 'max_age_minutes']:
                 value = int(value)  # Целые числа для времени
+        
+        elif setting_type == "целое":
+            value = int(float(user_input)) if '.' in user_input else int(user_input)
         
         elif setting_type == "валюта":
             if user_input.lower() in ['yuan', 'юань', '¥']:

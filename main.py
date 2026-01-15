@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import asyncio
+import time
 import sys
 from pathlib import Path
 
@@ -11,21 +12,43 @@ from config import BOT_TOKEN
 from bot.handlers import setup_handlers
 from bot.notifications import send_new_products
 from parsers.goofish import GoofishParser
-from storage.files import load_search_queries, add_seen_ids, load_seen_ids
-import time
+from storage.files import load_search_queries, add_seen_ids, load_seen_ids, get_user_queries
+
+# Создаем core/settings.py если его нет
+try:
+    from core.settings import settings
+    SETTINGS_AVAILABLE = True
+except ImportError:
+    # Если core/settings.py не существует, используем config.py
+    from config import CHECK_INTERVAL, MAX_AGE_MINUTES, MAX_PAGES, ROWS_PER_PAGE
+    SETTINGS_AVAILABLE = False
+    
+    class FallbackSettings:
+        def __init__(self):
+            self.check_interval = int(CHECK_INTERVAL)
+            self.max_age_minutes = int(MAX_AGE_MINUTES)
+            self.max_pages = int(MAX_PAGES)
+            self.rows_per_page = int(ROWS_PER_PAGE)
+    
+    settings = FallbackSettings()
 
 class SimpleMonitor:
-    """Простой мониторинг с парсером"""
-    
     def __init__(self, bot=None):
         self.bot = bot
         self.is_running = False
         self.cycles = 0
         self.total_products = 0
         self.last_check = None
-        self.parser = None  # Инициализируем позже
+        self.parser = None
         
-        print("✅ SimpleMonitor инициализирован")
+        # Используем настройки
+        self.settings = settings
+        
+        print("✅ SimpleMonitor инициализирован с настройками:")
+        print(f"   📅 Интервал: {self.settings.check_interval} сек")
+        print(f"   ⏳ Макс. возраст: {self.settings.max_age_minutes} мин")
+        print(f"   📄 Макс. страниц: {self.settings.max_pages}")
+        print(f"   📦 Товаров на стр.: {self.settings.rows_per_page}")
     
     async def initialize_parser(self):
         """Асинхронная инициализация парсера"""
@@ -42,7 +65,7 @@ class SimpleMonitor:
         return True
     
     async def run(self):
-        """Запуск мониторинга"""
+        """Запуск мониторинга с учетом интервала из настроек"""
         if not await self.initialize_parser():
             print("❌ Не могу запустить мониторинг - парсер не инициализирован")
             return
@@ -52,28 +75,90 @@ class SimpleMonitor:
         
         while self.is_running:
             try:
-                await self.check_all_queries()
+                await self.check_all_users_queries()
                 self.cycles += 1
                 
-                # Ждем между проверками
-                from config import CHECK_INTERVAL
-                print(f"⏳ Жду {CHECK_INTERVAL} секунд до следующей проверки...")
-                await asyncio.sleep(CHECK_INTERVAL)
+                # Используем настройки из settings
+                wait_time = self.settings.check_interval
+                print(f"⏳ Жду {wait_time} секунд до следующей проверки...")
+                await asyncio.sleep(wait_time)
                 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"❌ Ошибка в цикле мониторинга: {e}")
+                import traceback
+                traceback.print_exc()
                 await asyncio.sleep(60)
     
-    async def check_all_queries(self):
-        """Проверка всех запросов"""
-        queries = load_search_queries()
-        if not queries:
-            print("📭 Нет запросов для мониторинга")
+    async def check_all_users_queries(self):
+        """Проверка запросов всех пользователей"""
+        from storage.files import load_users, load_subscriptions
+        
+        users = load_users()
+        subscriptions = load_subscriptions()
+        
+        if not users:
+            print("📭 Нет пользователей для мониторинга")
             return
         
-        print(f"🔍 Проверяю {len(queries)} запросов...")
+        print(f"👥 Проверяю запросы {len(users)} пользователей...")
+        
+        total_found = 0
+        
+        for user_id_str in users:
+            try:
+                user_id = int(user_id_str)
+                user_queries = get_user_queries(user_id)
+                
+                if not user_queries:
+                    continue
+                
+                print(f"  👤 Пользователь {user_id}: {len(user_queries)} запросов")
+                
+                found_products = []
+                for query in user_queries:
+                    try:
+                        new_products = await self.check_query(query)
+                        if new_products:
+                            found_products.extend(new_products)
+                    except Exception as e:
+                        print(f"  ❌ Ошибка при проверке запроса '{query}' у пользователя {user_id}: {e}")
+                
+                # Отправляем товары пользователю
+                if found_products and self.bot:
+                    # Группируем по запросу
+                    products_by_query = {}
+                    for product in found_products:
+                        if product.query not in products_by_query:
+                            products_by_query[product.query] = []
+                        products_by_query[product.query].append(product)
+                    
+                    # Отправляем уведомления для каждого запроса
+                    for query, products in products_by_query.items():
+                        await self.bot.send_user_new_products(user_id, products, query)
+                    
+                    total_found += len(found_products)
+                    
+            except Exception as e:
+                print(f"❌ Ошибка при проверке пользователя {user_id_str}: {e}")
+        
+        # Также проверяем глобальные запросы для всех
+        await self.check_global_queries()
+        
+        self.last_check = time.strftime('%Y-%m-%d %H:%M:%S')
+        print(f"✅ Проверка завершена в {self.last_check}. Всего найдено: {total_found}")
+    
+    async def check_global_queries(self):
+        """Проверка глобальных запросов"""
+        from storage.files import load_search_queries
+        
+        queries = load_search_queries()
+        if not queries:
+            print("📭 Нет глобальных запросов")
+            return
+        
+        print(f"🌐 Проверяю {len(queries)} глобальных запросов...")
         
         found_products = []
         
@@ -83,10 +168,10 @@ class SimpleMonitor:
                 if new_products:
                     found_products.extend(new_products)
             except Exception as e:
-                print(f"❌ Ошибка при проверке запроса '{query}': {e}")
+                print(f"❌ Ошибка при проверке глобального запроса '{query}': {e}")
         
-        # Отправляем все найденные товары
-        if found_products and self.bot and self.bot.application:
+        # Отправляем товары всем пользователям
+        if found_products and self.bot:
             # Группируем по запросу
             products_by_query = {}
             for product in found_products:
@@ -94,38 +179,56 @@ class SimpleMonitor:
                     products_by_query[product.query] = []
                 products_by_query[product.query].append(product)
             
-            # Отправляем уведомления
+            # Отправляем уведомления для каждого запроса
             for query, products in products_by_query.items():
-                await self.bot.send_new_products(products, query)
-        
-        self.last_check = time.strftime('%Y-%m-%d %H:%M:%S')
-        print(f"✅ Проверка завершена в {self.last_check}. Найдено: {len(found_products)}")
+                await self.bot.send_global_new_products(products, query)
     
     async def check_query(self, query: str):
-        """Проверка одного запроса"""
+        """Проверка одного запроса с учетом ВСЕХ настроек"""
         print(f"  📝 Запрос: '{query}'")
         
-        try:
-            # Используем парсер для поиска (только 1 страница, чтобы не превышать лимит)
-            from config import ROWS_PER_PAGE
-            products = self.parser.search(query, page=1, rows=ROWS_PER_PAGE, only_new=True)
-            
-            if products:
-                print(f"    🎯 Найдено новых: {len(products)}")
+        all_products = []
+        
+        # Поиск по нескольким страницам (используем настройки)
+        max_pages = int(self.settings.max_pages)
+        rows_per_page = int(self.settings.rows_per_page)
+        
+        for page in range(1, max_pages + 1):
+            try:
+                print(f"    📄 Страница {page}/{max_pages}")
                 
-                # Добавляем в просмотренные
-                new_ids = [p.id for p in products]
-                added = add_seen_ids(new_ids)
-                self.total_products += len(products)
+                products = self.parser.search(
+                    query=query,
+                    page=page,
+                    rows=rows_per_page,
+                    only_new=True,
+                    max_age_minutes=self.settings.max_age_minutes
+                )
                 
-                return products
-            else:
-                print(f"    📭 Новых товаров нет")
-                return []
+                if not products:
+                    print(f"    📭 Нет товаров на странице {page}")
+                    break
                 
-        except Exception as e:
-            print(f"    ❌ Ошибка: {e}")
-            return []
+                print(f"    🎯 Найдено: {len(products)} новых")
+                all_products.extend(products)
+                
+                # Пауза между страницами (2 секунды)
+                await asyncio.sleep(2)
+                
+            except Exception as e:
+                print(f"    ❌ Ошибка на странице {page}: {e}")
+                import traceback
+                traceback.print_exc()
+                break
+        
+        # Добавляем ID в seen_ids
+        if all_products:
+            new_ids = [p.id for p in all_products]
+            added = add_seen_ids(new_ids)
+            self.total_products += len(all_products)
+            print(f"    💾 Сохранено {added} новых ID")
+        
+        return all_products
     
     def stop(self):
         """Остановка мониторинга"""
@@ -150,23 +253,35 @@ class GoofishBot:
         self.monitor = SimpleMonitor(bot=self)
         self.monitor_task = None
     
-    async def send_new_products(self, products, query=""):
-        """Отправка новых товаров всем подписчикам"""
+    async def send_user_new_products(self, user_id: int, products, query=""):
+        """Отправка новых товаров конкретному пользователю"""
         if not self.application:
             return
         
-        # Временно отправляем только админам
-        from config import ADMIN_IDS
-        for admin_id in ADMIN_IDS:
+        try:
+            await send_new_products(
+                self.application.bot,
+                user_id,
+                products,
+                query
+            )
+        except Exception as e:
+            print(f"❌ Ошибка отправки пользователю {user_id}: {e}")
+    
+    async def send_global_new_products(self, products, query=""):
+        """Отправка новых товаров всем пользователям"""
+        if not self.application:
+            return
+        
+        from storage.files import load_users
+        users = load_users()
+        
+        for user_id_str in users:
             try:
-                await send_new_products(
-                    self.application.bot,
-                    admin_id,
-                    products,
-                    query
-                )
+                user_id = int(user_id_str)
+                await self.send_user_new_products(user_id, products, query)
             except Exception as e:
-                print(f"❌ Ошибка отправки админу {admin_id}: {e}")
+                print(f"❌ Ошибка отправки пользователю {user_id_str}: {e}")
     
     async def start_monitoring(self):
         """Запуск мониторинга в фоне"""

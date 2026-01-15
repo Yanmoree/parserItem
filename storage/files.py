@@ -1,3 +1,4 @@
+# storage/files.py
 import json
 from pathlib import Path
 from typing import Dict, List, Set
@@ -106,38 +107,74 @@ def save_user(user_data: Dict):
 # ==================== Управление подписками ====================
 
 def load_subscriptions() -> Dict:
-    """Загрузка подписок"""
+    """Загрузка подписок (персональных запросов)"""
     if not SUBSCRIPTIONS_FILE.exists():
         return {}
     
     try:
         with open(SUBSCRIPTIONS_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
+            data = json.load(f)
+            return data
     except:
         return {}
 
-def add_subscription(user_id: int, query: str):
-    """Добавление подписки"""
-    subs = load_subscriptions()
+def get_user_queries(user_id: int) -> List[str]:
+    """Получение запросов конкретного пользователя"""
+    subscriptions = load_subscriptions()
     user_key = str(user_id)
     
-    if user_key not in subs:
-        subs[user_key] = []
+    # Если у пользователя есть персональные запросы - возвращаем их
+    if user_key in subscriptions:
+        return subscriptions[user_key]
     
-    if query not in subs[user_key]:
-        subs[user_key].append(query)
+    # Если нет - возвращаем глобальные запросы
+    return load_search_queries()
+
+def save_user_queries(user_id: int, queries: List[str]):
+    """Сохранение запросов пользователя"""
+    subscriptions = load_subscriptions()
+    subscriptions[str(user_id)] = queries
     
     try:
         with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
-            json.dump(subs, f, ensure_ascii=False, indent=2)
+            json.dump(subscriptions, f, ensure_ascii=False, indent=2)
         return True
-    except:
+    except Exception as e:
+        print(f"❌ Ошибка сохранения запросов пользователя: {e}")
         return False
 
-def get_user_subscriptions(user_id: int) -> List[str]:
-    """Получение подписок пользователя"""
-    subs = load_subscriptions()
-    return subs.get(str(user_id), [])
+def add_user_query(user_id: int, query: str) -> bool:
+    """Добавление запроса пользователю"""
+    queries = get_user_queries(user_id)
+    if query not in queries:
+        queries.append(query)
+        return save_user_queries(user_id, queries)
+    return False
+
+def remove_user_query(user_id: int, query: str) -> bool:
+    """Удаление запроса у пользователя"""
+    queries = get_user_queries(user_id)
+    if query in queries:
+        queries.remove(query)
+        return save_user_queries(user_id, queries)
+    return False
+
+def clear_user_queries(user_id: int) -> bool:
+    """Очистка всех запросов пользователя"""
+    subscriptions = load_subscriptions()
+    user_key = str(user_id)
+    
+    if user_key in subscriptions:
+        del subscriptions[user_key]
+        
+        try:
+            with open(SUBSCRIPTIONS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(subscriptions, f, ensure_ascii=False, indent=2)
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка очистки запросов пользователя: {e}")
+    
+    return False
 
 # ==================== Утилиты ====================
 

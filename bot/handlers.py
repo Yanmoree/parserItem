@@ -1,24 +1,33 @@
+# bot/handlers.py - ОБНОВИТЬ импорты и функцию setup_handlers
 from telegram import Update
 from telegram.ext import (
     ContextTypes, 
     CommandHandler, 
     MessageHandler, 
-    CallbackQueryHandler,  # <-- ДОБАВИТЬ
-    ConversationHandler,    # <-- ДОБАВИТЬ
+    CallbackQueryHandler,
+    ConversationHandler,
     filters
 )
 from bot.parser_settings import (
     settings_command, settings_callback, setting_value_handler, 
     cancel_settings, SETTING_CHOICE, SETTING_VALUE, parser_settings
 )
+# УДАЛИТЬ старые импорты:
+# from storage.files import (
+#     load_search_queries, add_search_query, 
+#     save_user, add_subscription, get_user_subscriptions
+# )
+
+# ДОБАВИТЬ новые импорты:
 from storage.files import (
-    load_search_queries, add_search_query, 
-    save_user, add_subscription, get_user_subscriptions
+    load_search_queries, save_user, 
+    get_user_queries  # <-- новая функция
 )
+from bot.personal_queries import setup_personal_handlers  # <-- новый импорт
 from parsers.goofish import GoofishParser
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Команда /start"""
+    """Обновленная команда /start с информацией о персональных запросах"""
     user = update.effective_user
     
     # Сохраняем пользователя
@@ -32,67 +41,54 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"👋 Привет, {user.first_name}!\n\n"
-        "🤖 <b>Goofish Parser Bot</b>\n\n"
-        "Я мониторю новые товары на Goofish.\n"
-        "Запросы берутся из файла <code>data/search_queries.txt</code>\n\n"
-        "📋 <b>Основные команды:</b>\n"
-        "/queries - Показать запросы\n"
-        "/add_query - Добавить запрос\n"
-        "/search - Поиск сейчас\n"
-        "/subscribe - Подписаться\n"
-        "/mysubs - Мои подписки\n"
+        "🤖 <b>Goofish Parser Bot (Персональные подписки)</b>\n\n"
+        "🔔 <b>ВАЖНО:</b> Теперь вы будете получать уведомления "
+        "<u>только по вашим персональным запросам</u>!\n\n"
+        "📋 <b>Управление запросами:</b>\n"
+        "/myqueries - Мои запросы\n"
+        "/add - Добавить запрос\n"
+        "/remove - Удалить запрос\n"
+        "/clear - Очистить все\n\n"
+        "🔍 <b>Поиск:</b>\n"
+        "/search - Быстрый поиск\n\n"
+        "⚙️ <b>Настройки:</b>\n"
         "/status - Статус\n"
-        "/help - Помощь\n"
-        "/settings - Настройки парсера",  # <-- ДОБАВИЛИ
+        "/settings - Настройки парсера\n"
+        "/help - Помощь",
         parse_mode='HTML'
     )
 
-async def queries_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать все запросы из файла"""
-    queries = load_search_queries()
-    
-    if not queries:
-        await update.message.reply_text("📭 Файл запросов пуст")
-        return
-    
-    message = "📋 <b>Запросы для мониторинга:</b>\n\n"
-    for i, query in enumerate(queries, 1):
-        message += f"{i}. {query}\n"
-    
-    message += f"\nВсего: {len(queries)} запросов\n"
-    message += "Файл: <code>data/search_queries.txt</code>"
-    
-    await update.message.reply_text(message, parse_mode='HTML')
-
-async def add_query_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Добавить запрос в файл"""
-    if not context.args:
-        await update.message.reply_text(
-            "📝 Добавление запроса:\n"
-            "/add_query <i>текст запроса</i>\n\n"
-            "Пример:\n"
-            "/add_query iphone 13\n"
-            "/add_query ноутбук asus",
-            parse_mode='HTML'
-        )
-        return
-    
-    query = ' '.join(context.args)
-    
-    if add_search_query(query):
-        await update.message.reply_text(f"✅ Запрос добавлен: <b>{query}</b>", parse_mode='HTML')
-    else:
-        await update.message.reply_text(f"ℹ️ Запрос уже есть в списке: <b>{query}</b>", parse_mode='HTML')
+async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Команда /help"""
+    await update.message.reply_text(
+        "ℹ️ <b>Помощь по боту:</b>\n\n"
+        "🔔 <b>Как это работает:</b>\n"
+        "1. Добавьте свои запросы через /add\n"
+        "2. Бот будет мониторить новые товары\n"
+        "3. Получайте уведомления только по вашим запросам\n\n"
+        "📋 <b>Основные команды:</b>\n"
+        "/myqueries - Управление запросами\n"
+        "/add - Добавить запрос\n"
+        "/remove - Удалить запрос\n"
+        "/clear - Очистить все\n"
+        "/search - Быстрый поиск\n"
+        "/status - Статус системы\n"
+        "/settings - Настройки парсера\n\n"
+        "💡 <b>Совет:</b>\n"
+        "Используйте /myqueries для удобного управления запросами",
+        parse_mode='HTML'
+    )
 
 async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Быстрый поиск"""
+    """Быстрый поиск (не зависит от подписок)"""
     if not context.args:
         await update.message.reply_text(
-            "🔍 Быстрый поиск:\n"
-            "/search <i>запрос</i>\n\n"
-            "Пример:\n"
-            "/search iphone\n"
-            "/search ноутбук",
+            "🔍 <b>Быстрый поиск</b>\n\n"
+            "Используйте: /search <i>запрос</i>\n\n"
+            "<b>Примеры:</b>\n"
+            "/search iphone 15\n"
+            "/search macbook pro\n\n"
+            "<i>Этот поиск не влияет на ваши подписки</i>",
             parse_mode='HTML'
         )
         return
@@ -137,56 +133,8 @@ async def search_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"❌ Ошибка: {str(e)[:100]}")
 
-async def subscribe_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Подписка на запрос"""
-    user_id = update.effective_user.id
-    
-    if not context.args:
-        await update.message.reply_text(
-            "📩 Подписка на уведомления:\n"
-            "/subscribe <i>запрос</i>\n\n"
-            "Пример:\n"
-            "/subscribe iphone\n"
-            "/subscribe cav empt"
-        )
-        return
-    
-    query = ' '.join(context.args)
-    
-    if add_subscription(user_id, query):
-        await update.message.reply_text(
-            f"✅ Вы подписались на: <b>{query}</b>\n\n"
-            "Новые товары будут приходить автоматически.",
-            parse_mode='HTML'
-        )
-    else:
-        await update.message.reply_text(
-            f"ℹ️ Вы уже подписаны на: <b>{query}</b>",
-            parse_mode='HTML'
-        )
-
-async def mysubs_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Мои подписки"""
-    user_id = update.effective_user.id
-    subscriptions = get_user_subscriptions(user_id)
-    
-    if not subscriptions:
-        await update.message.reply_text(
-            "📭 У вас нет подписок.\n"
-            "Используйте /subscribe для добавления."
-        )
-        return
-    
-    message = "📋 <b>Ваши подписки:</b>\n\n"
-    for i, query in enumerate(subscriptions, 1):
-        message += f"{i}. {query}\n"
-    
-    message += f"\nВсего: {len(subscriptions)} подписок"
-    
-    await update.message.reply_text(message, parse_mode='HTML')
-
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Статус системы"""
+    """Статус системы с информацией о пользователе"""
     bot = context.application.bot_data.get('bot_instance')
     
     if not bot or not bot.monitor:
@@ -194,7 +142,11 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     stats = bot.monitor.get_stats()
-    queries = load_search_queries()
+    user_id = update.effective_user.id
+    
+    # Получаем запросы пользователя
+    user_queries = get_user_queries(user_id)
+    global_queries = load_search_queries()
     
     status = "🟢 <b>Активен</b>" if stats['is_running'] else "🔴 <b>Остановлен</b>"
     
@@ -203,15 +155,26 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Мониторинг: {status}\n"
         f"Циклов: {stats['cycles']}\n"
         f"Найдено товаров: {stats['total_products']}\n"
-        f"Запросов: {len(queries)}\n"
-        f"Последняя проверка: {stats['last_check'] or 'никогда'}"
+        f"Общих запросов: {len(global_queries)}\n"
+        f"<b>Ваших запросов: {len(user_queries)}</b>\n"
+        f"Последняя проверка: {stats['last_check'] or 'никогда'}\n\n"
     )
+    
+    if user_queries:
+        message += "<b>Ваши запросы:</b>\n"
+        for i, q in enumerate(user_queries[:5], 1):
+            message += f"{i}. {q}\n"
+        if len(user_queries) > 5:
+            message += f"... и еще {len(user_queries) - 5}\n"
+    else:
+        message += "📭 <i>У вас нет персональных запросов</i>\n"
+        message += "Используйте /add чтобы добавить"
     
     await update.message.reply_text(message, parse_mode='HTML')
 
 def setup_handlers(application, bot_instance):
     """Настройка всех обработчиков"""
-    # Сохраняем ссылку на бота и настройки
+    # Сохраняем ссылку на бота
     application.bot_data['bot_instance'] = bot_instance
     application.bot_data['parser_settings'] = parser_settings
     
@@ -225,13 +188,12 @@ def setup_handlers(application, bot_instance):
         fallbacks=[CommandHandler("cancel", cancel_settings)],
     )
     
-    # Регистрируем команды
+    # Регистрируем основные команды
     application.add_handler(CommandHandler("start", start_command))
-    application.add_handler(CommandHandler("help", start_command))
-    application.add_handler(CommandHandler("queries", queries_command))
-    application.add_handler(CommandHandler("add_query", add_query_command))
+    application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("search", search_command))
-    application.add_handler(CommandHandler("subscribe", subscribe_command))
-    application.add_handler(CommandHandler("mysubs", mysubs_command))
     application.add_handler(CommandHandler("status", status_command))
-    application.add_handler(settings_conv_handler)  # Добавляем обработчик настроек
+    application.add_handler(settings_conv_handler)
+    
+    # Регистрируем обработчики персональных запросов
+    setup_personal_handlers(application)

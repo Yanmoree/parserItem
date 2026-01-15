@@ -1,4 +1,4 @@
-# parsers/goofish_fixed.py - ИСПРАВЛЕННАЯ версия на основе рабочего проекта
+# parsers/goofish.py - ВЕРСИЯ С ДИАГНОСТИКОЙ ПОТЕРЬ И ФОТО
 import requests
 import json
 import time
@@ -13,8 +13,12 @@ from config import (
 )
 from storage.files import load_seen_ids, add_seen_ids
 
+# Отключаем предупреждения SSL для чистоты логов
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 class GoofishParser:
-    """Парсер для Goofish - ИСПРАВЛЕННАЯ на основе рабочего проекта"""
+    """Парсер для Goofish с диагностикой потерь данных"""
     
     def __init__(self, cookies_file=None):
         self.base_url = "https://h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search/1.0/"
@@ -24,10 +28,17 @@ class GoofishParser:
         self.seen_ids = load_seen_ids()
         
         print(f"✅ Парсер инициализирован. Cookies: {len(self.cookies)}")
-        print(f"✅ Токен: {self.cookies.get('_m_h5_tk', '')[:50]}...")
         
-        # Проверяем токен
-        self._check_token()
+        # Счетчики для диагностики
+        self.stats = {
+            'total_api_items': 0,
+            'valid_items': 0,
+            'invalid_items': 0,
+            'filtered_by_query': 0,
+            'filtered_by_age': 0,
+            'filtered_by_seen': 0,
+            'final_products': 0
+        }
     
     def _load_cookies(self) -> Dict:
         """Загрузка cookies"""
@@ -36,7 +47,6 @@ class GoofishParser:
                 with open(self.cookies_file, 'r', encoding='utf-8') as f:
                     cookies = json.load(f)
                 
-                # Проверяем критичные cookies
                 required = ['_m_h5_tk', 't', 'cookie2']
                 missing = [r for r in required if r not in cookies]
                 if missing:
@@ -67,31 +77,9 @@ class GoofishParser:
         
         return session
     
-    def _check_token(self):
-        """Проверка валидности токена"""
-        token_full = self.cookies.get('_m_h5_tk', '')
-        if '_' not in token_full:
-            print("❌ Токен в неправильном формате")
-            return
-        
-        token, token_timestamp = token_full.split('_', 1)
-        token_time = int(token_timestamp) / 1000
-        current_time = time.time()
-        diff = current_time - token_time
-        
-        print(f"📊 Токен создан: {datetime.fromtimestamp(token_time)}")
-        print(f"📊 Текущее время: {datetime.fromtimestamp(current_time)}")
-        print(f"📊 Разница: {diff:.0f} секунд ({diff/3600:.1f} часов)")
-        
-        # Критическая проблема: токен указывает на будущее время!
-        if token_time > current_time + 3600:  # Токен в будущем более чем на 1 час
-            print("⚠️  КРИТИЧЕСКОЕ ПРЕДУПРЕЖДЕНИЕ: Токен указывает на будущее время!")
-            print("🔄 Рекомендуется обновить cookies через utils/cookies.py")
-    
     def _make_request(self, query: str, page: int, rows: int) -> Optional[Dict]:
-        """Выполнение запроса к API (ИСПРАВЛЕННЫЙ ВАРИАНТ)"""
+        """Выполнение запроса к API"""
         try:
-            # ВАЖНОЕ ИСПРАВЛЕНИЕ: Используем ТЕКУЩЕЕ время, а не время из токена!
             timestamp = str(int(time.time() * 1000))
             
             token_full = self.cookies.get('_m_h5_tk', '')
@@ -101,7 +89,6 @@ class GoofishParser:
             
             token = token_full.split('_')[0]
             
-            # Тело запроса - используем формат из рабочего проекта
             data_dict = {
                 "pageNumber": page,
                 "keyword": query,
@@ -120,11 +107,9 @@ class GoofishParser:
             
             data_str = json.dumps(data_dict, separators=(',', ':'))
             
-            # Подпись - КРИТИЧНО: token & timestamp & appKey & data
             sign_string = f"{token}&{timestamp}&34839810&{data_str}"
             signature = hashlib.md5(sign_string.encode()).hexdigest()
             
-            # Параметры - используем формат из рабочего проекта
             params = {
                 'jsv': '2.7.2',
                 'appKey': '34839810',
@@ -142,23 +127,15 @@ class GoofishParser:
                 'data': data_str
             }
             
-            # DEBUG информация
-            print(f"\n🔧 DEBUG Запрос:")
-            print(f"   URL: {self.base_url}")
-            print(f"   Токен: {token[:20]}...")
-            print(f"   Время (ТЕКУЩЕЕ): {timestamp}")
-            print(f"   Подпись: {signature}")
-            print(f"   Запрос: '{query}'")
-            print(f"   Страница: {page}")
+            print(f"\n🔧 Запрос: '{query}', стр {page}, rows={rows}")
             
-            # Добавляем задержку для избежания rate limit
             time.sleep(2)
             
             response = self.session.post(
                 self.base_url, 
                 params=params, 
                 timeout=REQUEST_TIMEOUT,
-                verify=False  # Отключаем SSL проверку для тестов
+                verify=False
             )
             
             print(f"   Статус: {response.status_code}")
@@ -166,13 +143,6 @@ class GoofishParser:
             if response.status_code == 200:
                 result = response.json()
                 
-                # Сохраняем ответ для отладки
-                filename = f"debug_response_fixed_{query}_{int(time.time())}.json"
-                with open(filename, 'w', encoding='utf-8') as f:
-                    json.dump(result, f, ensure_ascii=False, indent=2)
-                print(f"💾 Ответ сохранен в {filename}")
-                
-                # Проверяем ответ на ошибки
                 if 'ret' in result:
                     ret_val = result['ret']
                     if isinstance(ret_val, list) and len(ret_val) > 0:
@@ -184,17 +154,12 @@ class GoofishParser:
                             return result
                         elif 'RGV587_ERROR' in ret_str:
                             print(f"🚫 RATE LIMIT обнаружен!")
-                            print(f"   Ожидание 30 секунд...")
                             time.sleep(30)
-                            return None
-                        else:
-                            print(f"❌ API ошибка: {ret_str}")
                             return None
                 
                 return result
             else:
                 print(f"❌ HTTP ошибка: {response.status_code}")
-                print(f"Текст: {response.text[:200]}")
                 
         except Exception as e:
             print(f"❌ Ошибка запроса: {e}")
@@ -204,86 +169,180 @@ class GoofishParser:
         return None
     
     def search(self, query: str, page: int = 1, rows: int = None, 
-               only_new: bool = True) -> List[Product]:
-        """Поиск товаров"""
+               only_new: bool = True, max_age_minutes: float = None) -> List[Product]:
+        """Поиск товаров с ДИАГНОСТИКОЙ потерь"""
         rows = rows or ROWS_PER_PAGE
         
-        print(f"\n🔍 Поиск: '{query}', страница {page}...")
+        # Сбрасываем статистику
+        self.stats = {k: 0 for k in self.stats}
+        
+        print(f"\n🔍 Поиск: '{query}', стр {page}, rows={rows}")
+        print(f"   Фильтры: возраст ≤ {max_age_minutes or '∞'} мин, новые: {only_new}")
         
         response = self._make_request(query, page, rows)
         if not response:
-            print(f"   ❌ Нет ответа")
             return []
         
-        products = self._parse_response_fixed(response, query)
+        # Шаг 1: Парсинг ответа
+        products, parse_stats = self._parse_response_debug(response, query)
+        self.stats.update(parse_stats)
         
-        print(f"   ✅ Найдено товаров: {len(products)}")
+        print(f"\n📊 ДИАГНОСТИКА ПАРСИНГА:")
+        print(f"   📦 Всего элементов в API: {self.stats['total_api_items']}")
+        print(f"   ✅ Успешно распарсено: {self.stats['valid_items']}")
+        print(f"   ❌ Невалидные/пропущенные: {self.stats['invalid_items']}")
         
-        # Фильтруем только новые товары
+        if self.stats['filtered_by_query'] > 0:
+            print(f"   🔍 Отфильтровано по запросу: {self.stats['filtered_by_query']}")
+        
+        # Шаг 2: Фильтрация по возрасту
+        if max_age_minutes is not None:
+            before = len(products)
+            products = [p for p in products if p.age_minutes <= max_age_minutes]
+            self.stats['filtered_by_age'] = before - len(products)
+            print(f"   ⏳ Отфильтровано по возрасту: {self.stats['filtered_by_age']}")
+        
+        print(f"   📦 После фильтров: {len(products)} товаров")
+        
+        # Шаг 3: Фильтрация по новизне
         if only_new:
             new_products = self._filter_new_products(products)
-            print(f"   🆕 Новых: {len(new_products)}")
+            self.stats['filtered_by_seen'] = len(products) - len(new_products)
+            self.stats['final_products'] = len(new_products)
+            
+            print(f"   🆕 Отфильтровано (уже видели): {self.stats['filtered_by_seen']}")
+            print(f"   🎯 ФИНАЛЬНО новых: {self.stats['final_products']}")
+            
             return new_products
         
+        self.stats['final_products'] = len(products)
         return products
     
-    def _parse_response_fixed(self, api_response: Dict, query: str) -> List[Product]:
-        """Парсинг ответа API (исправленная версия из рабочего проекта)"""
+    def _parse_response_debug(self, api_response: Dict, query: str) -> Tuple[List[Product], Dict]:
+        """Парсинг ответа с ДЕТАЛЬНОЙ диагностикой"""
         products = []
+        stats = {
+            'total_api_items': 0,
+            'valid_items': 0,
+            'invalid_items': 0,
+            'filtered_by_query': 0,
+            'invalid_reasons': {
+                'no_data': 0,
+                'no_id': 0,
+                'no_title': 0,
+                'price_error': 0,
+                'query_filter': 0,
+                'other': 0
+            }
+        }
         
         if not api_response:
-            return products
+            return products, stats
         
         data = api_response.get('data', {})
         result_list = data.get('resultList', [])
+        stats['total_api_items'] = len(result_list)
         
-        print(f"   📦 Всего элементов в ответе: {len(result_list)}")
+        print(f"\n🔍 АНАЛИЗ {len(result_list)} ЭЛЕМЕНТОВ API:")
         
-        for i, item in enumerate(result_list[:15]):  # Ограничиваем для отладки
+        for i, item in enumerate(result_list):
             try:
-                # Основной путь к данным (из рабочего проекта)
-                item_data = item.get('data', {}).get('item', {}).get('main', {}).get('clickParam', {}).get('args', {})
+                # Пробуем разные пути к данным
+                item_data = None
+                data_path = ""
                 
-                # Альтернативный путь (из рабочего проекта)
+                # Путь 1: Основной
+                item_data = item.get('data', {}).get('item', {}).get('main', {}).get('clickParam', {}).get('args', {})
+                if item_data:
+                    data_path = "main.clickParam.args"
+                
+                # Путь 2: Альтернативный (через exContent)
                 if not item_data:
                     ex_content = item.get('data', {}).get('item', {}).get('main', {}).get('exContent', {})
                     if ex_content:
                         item_id = ex_content.get('itemId', '')
+                        # Ищем соответствующий элемент с args
                         for elem in result_list:
                             args = elem.get('data', {}).get('item', {}).get('main', {}).get('clickParam', {}).get('args', {})
                             if args.get('id') == item_id:
                                 item_data = args
+                                data_path = "exContent cross-reference"
                                 break
                 
+                # Путь 3: Прямой доступ к данным
                 if not item_data:
+                    item_data = item.get('data', {}).get('item', {})
+                    if item_data:
+                        data_path = "data.item"
+                
+                # Если вообще нет данных
+                if not item_data:
+                    stats['invalid_items'] += 1
+                    stats['invalid_reasons']['no_data'] += 1
+                    
+                    if i < 10:  # Логируем только первые 10
+                        print(f"   {i:3d}. ❌ НЕТ ДАННЫХ. Структура: {list(item.keys()) if isinstance(item, dict) else type(item)}")
                     continue
                 
+                # Извлекаем ID
                 item_id = item_data.get('id', '')
                 if not item_id or item_id == 'None':
+                    stats['invalid_items'] += 1
+                    stats['invalid_reasons']['no_id'] += 1
+                    
+                    if i < 10:
+                        print(f"   {i:3d}. ❌ НЕТ ID. Путь: {data_path}")
                     continue
                 
-                # Название (из рабочего проекта)
-                title = item_data.get('detailParams', {}).get('title', '') if isinstance(item_data.get('detailParams'), dict) else ''
+                # Извлекаем название
+                title = ""
+                
+                # Способ 1: Из detailParams
+                detail_params = item_data.get('detailParams', {})
+                if isinstance(detail_params, dict):
+                    title = detail_params.get('title', '')
+                
+                # Способ 2: Из exContent
                 if not title:
                     ex_content = item.get('data', {}).get('item', {}).get('main', {}).get('exContent', {})
                     if ex_content:
-                        title = ex_content.get('detailParams', {}).get('title', '')
+                        detail_params = ex_content.get('detailParams', {})
+                        if isinstance(detail_params, dict):
+                            title = detail_params.get('title', '')
+                
+                # Способ 3: Прямое поле title
+                if not title:
+                    title = item_data.get('title', '')
                 
                 if not title:
+                    stats['invalid_items'] += 1
+                    stats['invalid_reasons']['no_title'] += 1
+                    
+                    if i < 10:
+                        print(f"   {i:3d}. ❌ НЕТ НАЗВАНИЯ. ID: {item_id}, Путь: {data_path}")
                     continue
                 
-                # Фильтр по запросу (опционально)
-                if query and query.lower() not in title.lower():
+                # ФИЛЬТРАЦИЯ ПО ЗАПРОСУ (если включена в настройках)
+                from bot.parser_settings import parser_settings
+                filter_by_query = parser_settings.get('filter_by_query', True)
+                
+                if filter_by_query and query and query.lower() not in title.lower():
+                    stats['invalid_items'] += 1
+                    stats['invalid_reasons']['query_filter'] += 1
+                    stats['filtered_by_query'] += 1
+                    
+                    if i < 10:
+                        print(f"   {i:3d}. 🔍 ФИЛЬТР по запросу. Title: {title[:50]}...")
                     continue
                 
-                # Цена (исправленная конвертация)
+                # Извлекаем цену
                 price_str = item_data.get('price', '0')
                 try:
-                    # Убираем нечисловые символы
                     price_clean = re.sub(r'[^\d\.]', '', price_str)
                     price = float(price_clean) if price_clean else 0.0
                 except:
                     price = 0.0
+                    stats['invalid_reasons']['price_error'] += 1
                 
                 # Время публикации
                 publish_time_str = item_data.get('publishTime', '0')
@@ -304,6 +363,32 @@ class GoofishParser:
                     if ex_content:
                         location = ex_content.get('area', '')
                 
+                # ========== ИЗВЛЕЧЕНИЕ ФОТО ==========
+                images = []
+                
+                # Путь 1: Основной путь к фото
+                pic_url = item_data.get('picUrl', '')
+                if pic_url and pic_url.startswith('http'):
+                    images.append(pic_url)
+                
+                # Путь 2: Альтернативный путь через pics
+                pics_list = item_data.get('pics', [])
+                if isinstance(pics_list, list) and pics_list:
+                    for pic in pics_list[:3]:  # Берем первые 3 фото
+                        if isinstance(pic, dict) and pic.get('picUrl'):
+                            img_url = pic['picUrl']
+                            if img_url.startswith('http') and img_url not in images:
+                                images.append(img_url)
+                
+                # Путь 3: Попробовать из exContent
+                if not images:
+                    ex_content = item.get('data', {}).get('item', {}).get('main', {}).get('exContent', {})
+                    if ex_content:
+                        pic_url = ex_content.get('picUrl', '')
+                        if pic_url and pic_url.startswith('http'):
+                            images.append(pic_url)
+                # =====================================
+                
                 # Создаем продукт
                 product = Product(
                     id=item_id,
@@ -312,17 +397,40 @@ class GoofishParser:
                     url=f"https://www.goofish.com/item?id={item_id}",
                     location=location,
                     age_minutes=round(age_minutes, 1),
-                    query=query
+                    query=query,
+                    images=images  # <-- Добавляем фото!
                 )
                 
                 products.append(product)
-                print(f"   {i+1}. {title[:50]}... - ¥{price:.2f}")
+                stats['valid_items'] += 1
+                
+                # Выводим первые 20 товаров для примера
+                if stats['valid_items'] <= 20:
+                    photo_info = f" 📸{len(images)}" if images else ""
+                    print(f"   {i:3d}. ✅ {title[:50]}... - ¥{price:.2f}{photo_info} (путь: {data_path})")
                 
             except Exception as e:
-                print(f"   ⚠️ Ошибка парсинга товара: {e}")
-                continue
+                stats['invalid_items'] += 1
+                stats['invalid_reasons']['other'] += 1
+                
+                if i < 10:
+                    print(f"   {i:3d}. ⚠️ Ошибка парсинга: {e}")
         
-        return products
+        # Сводка по невалидным элементам
+        print(f"\n📋 ПРИЧИНЫ ПОТЕРЬ:")
+        for reason, count in stats['invalid_reasons'].items():
+            if count > 0:
+                reason_text = {
+                    'no_data': 'Нет данных',
+                    'no_id': 'Нет ID',
+                    'no_title': 'Нет названия',
+                    'price_error': 'Ошибка цены',
+                    'query_filter': 'Фильтр по запросу',
+                    'other': 'Другие ошибки'
+                }.get(reason, reason)
+                print(f"   • {reason_text}: {count}")
+        
+        return products, stats
     
     def _filter_new_products(self, products: List[Product]) -> List[Product]:
         """Фильтрация только новых товаров"""
@@ -341,10 +449,28 @@ class GoofishParser:
     def test_connection(self) -> bool:
         """Простой тест подключения"""
         try:
-            # Пробуем сделать простой запрос
             response = self.session.get('https://www.goofish.com', timeout=10)
             print(f"✅ Подключение к Goofish: {response.status_code}")
             return response.status_code == 200
         except Exception as e:
             print(f"❌ Ошибка подключения: {e}")
             return False
+    
+    def print_detailed_stats(self):
+        """Вывод детальной статистики"""
+        print(f"\n📊 ДЕТАЛЬНАЯ СТАТИСТИКА ПАРСЕРА:")
+        print(f"   📦 Всего из API: {self.stats['total_api_items']}")
+        print(f"   ✅ Валидные: {self.stats['valid_items']}")
+        print(f"   ❌ Невалидные: {self.stats['invalid_items']}")
+        
+        if self.stats['filtered_by_query'] > 0:
+            print(f"   🔍 Отфильтровано по запросу: {self.stats['filtered_by_query']}")
+        
+        print(f"   ⏳ Отфильтровано по возрасту: {self.stats['filtered_by_age']}")
+        print(f"   📍 Отфильтровано (уже видели): {self.stats['filtered_by_seen']}")
+        print(f"   🎯 Финальных товаров: {self.stats['final_products']}")
+        
+        # Процент успеха
+        if self.stats['total_api_items'] > 0:
+            success_rate = (self.stats['valid_items'] / self.stats['total_api_items']) * 100
+            print(f"   📈 Эффективность парсинга: {success_rate:.1f}%")
